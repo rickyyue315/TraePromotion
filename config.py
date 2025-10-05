@@ -5,16 +5,14 @@ from datetime import datetime
 class Config:
     """系統配置類"""
     
-    # 基本配置
+    # 應用配置
     APP_NAME = "Retail Promotion System"
-    VERSION = "v1.0"
+    APP_VERSION = "v1.0"
     DEVELOPER = "Ricky"
-    
-    # Streamlit配置
-    PAGE_TITLE = "Retail Promotion Target Inventory & Distribution System"
     PAGE_ICON = "📊"
     LAYOUT = "wide"
     INITIAL_SIDEBAR_STATE = "expanded"
+    PAGE_TITLE = "Retail Promotion Target Inventory & Distribution System"
     
     # 文件配置
     SUPPORTED_FILE_TYPES = ['xlsx']
@@ -24,8 +22,10 @@ class Config:
     # 數據處理配置
     MAX_ABNORMAL_VALUE = 100000
     DEFAULT_LEAD_TIME = 2.5
-    LEAD_TIME_MIN = 2.0
+    LEAD_TIME_MIN = 0.1
     LEAD_TIME_MAX = 3.0
+    LEAD_TIME_STEP = 0.1
+    LEAD_TIME_HELP = "Adjust lead time for demand calculation"
     
     # 業務邏輯配置
     TARGET_COEFFICIENTS = {
@@ -35,7 +35,12 @@ class Config:
     }
     
     DAYS_IN_MONTH = 30
-    LEAD_TIME_DEFAULT = 2.5
+    TARGET_TYPE_MULTIPLIERS = {
+        'HK': 1,
+        'MO': 1,
+        'ALL': 2
+    }
+    RP_TYPE_RF = 'RF'
     
     # 日誌配置
     LOG_FILE = "app.log"
@@ -45,14 +50,34 @@ class Config:
     # 匯出配置
     EXPORT_FILE_PREFIX = "Promotion_Demand_Report"
     EXPORT_DATE_FORMAT = "%Y%m%d_%H%M%S"
+    EXCEL_ENGINE = 'openpyxl'
+    EXCEL_SHEET_ANALYSIS = 'Analysis Results'
+    EXCEL_SHEET_SUMMARY = 'Summary'
+    EXCEL_SHEET_ORIGINAL = 'Original Data'
     
     # 視覺化配置
-    PLOT_FIGSIZE = (15, 12)
-    PLOT_COLORMAP = "viridis"
+    VISUALIZATION_FIGSIZE = (15, 12)
+    VISUALIZATION_TITLE_FONT_SIZE = 16
+    VISUALIZATION_TITLE_FONT_WEIGHT = 'bold'
+    BAR_CHART_WIDTH = 0.35
+    CHART_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    PIE_CHART_COLORS = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#ff99cc', '#c2c2f0']
+    HEATMAP_COLORMAP = "viridis"
     MAX_HEATMAP_DATA_POINTS = 20
+    MAX_SCATTER_POINTS = 100
+    SCATTER_ALPHA = 0.6
+    SCATTER_COLOR = '#1f77b4'
+    SCATTER_SIZE = 50
+    TRENDLINE_ALPHA = 0.8
+    GRID_ALPHA = 0.3
     
     # 快取配置
     CACHE_TTL = 3600  # 1小時
+    
+    # 資料處理配置
+    QUANTITY_COLUMNS = ['SaSa Net Stock', 'Pending Received', 'Safety Stock', 'Last Month Sold Qty', 'MTD Sold Qty', 'SKU Target', 'Shop Target(HK)', 'Shop Target(MO)', 'Shop Target(ALL)']
+    OUTLIER_THRESHOLD = 10000
+    STRING_COLUMNS = ['Article', 'Article Description', 'RP Type', 'Site', 'Group No.', 'Target Type']
     
     # 安全配置
     ENABLE_FILE_VALIDATION = True
