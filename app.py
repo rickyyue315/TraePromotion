@@ -49,13 +49,13 @@ def load_excel_file(file, sheet_name=None):
 
 def validate_inventory_file(df):
     """驗證庫存檔案"""
-    missing_columns = [col for col in REQUIRED_COLUMNS['inventory'] if col not in df.columns]
+    missing_columns = [col for col in REQUIRED_COLUMNS['file_a'] if col not in df.columns]
     return missing_columns
 
 def validate_file_b(df1, df2):
     """驗證檔案B的必需欄位"""
-    missing_sheet1 = [col for col in REQUIRED_COLUMNS['promotion_sheet1'] if col not in df1.columns] if df1 is not None else []
-    missing_sheet2 = [col for col in REQUIRED_COLUMNS['promotion_sheet2'] if col not in df2.columns] if df2 is not None else []
+    missing_sheet1 = [col for col in REQUIRED_COLUMNS['file_b_sheet1'] if col not in df1.columns] if df1 is not None else []
+    missing_sheet2 = [col for col in REQUIRED_COLUMNS['file_b_sheet2'] if col not in df2.columns] if df2 is not None else []
     
     return missing_sheet1, missing_sheet2
 
@@ -94,6 +94,21 @@ def preprocess_data(df):
     for col in string_columns:
         if col in df_processed.columns:
             df_processed[col] = df_processed[col].fillna('').astype(str)
+    
+    # Supply source 驗證和處理
+    if 'Supply source' in df_processed.columns:
+        # 確保為字串類型
+        df_processed['Supply source'] = df_processed['Supply source'].astype(str).str.strip()
+        
+        # 驗證有效供應來源
+        invalid_supply_mask = ~df_processed['Supply source'].isin(Config.VALID_SUPPLY_SOURCES)
+        if invalid_supply_mask.any():
+            df_processed.loc[invalid_supply_mask, 'Supply source'] = Config.INVALID_SOURCE_DEFAULT
+            notes.append(f"Supply source: 修正了{invalid_supply_mask.sum()}個無效值")
+    
+    # Description p. group 處理
+    if 'Description p. group' in df_processed.columns:
+        df_processed['Description p. group'] = df_processed['Description p. group'].fillna('').astype(str).str.strip()
     
     # 添加Notes欄位
     df_processed['Notes'] = '; '.join(notes) if notes else 'No data corrections needed'
@@ -179,18 +194,58 @@ def calculate_business_logic(df_inventory, df_promotion_sku, df_promotion_shop, 
             df_merged['Total Demand'] - df_merged['Available Stock'] + df_merged['Safety Stock']
         )
         
-        # 派貨建議
+        # 計算缺貨數量
+        df_merged['Out of Stock Qty'] = np.maximum(
+            0,
+            df_merged['Net Demand'] - df_merged['SaSa Net Stock'] - df_merged['Pending Received']
+        )
+        
+        # 條件性通知與建議
+        df_merged['Notification Notes'] = ''
+        
+        # 處理Supply source為1或4的情況（通知Buyer）
+        buyer_notification_mask = df_merged['Supply source'].isin(Config.SUPPLY_SOURCE_BUYER_NOTIFICATION)
+        if buyer_notification_mask.any():
+            buyer_notifications = []
+            for idx in df_merged[buyer_notification_mask].index:
+                out_of_stock = df_merged.loc[idx, 'Out of Stock Qty']
+                buyer_group = df_merged.loc[idx, 'Description p. group']
+                notification = f"缺貨通知：Buyer {buyer_group}，缺貨數量 {out_of_stock}"
+                buyer_notifications.append(notification)
+                df_merged.loc[idx, 'Notification Notes'] = notification
+        
+        # 處理Supply source為2的情況（RP team建議）
+        rp_team_mask = df_merged['Supply source'].isin(Config.SUPPLY_SOURCE_RP_TEAM)
+        if rp_team_mask.any():
+            for idx in df_merged[rp_team_mask].index:
+                out_of_stock = df_merged.loc[idx, 'Out of Stock Qty']
+                suggestion = f"RP team建議：對照D001庫存進行補貨，缺貨數量 {out_of_stock}"
+                df_merged.loc[idx, 'Notification Notes'] = suggestion
+        
+        # 派貨建議（整合缺貨邏輯）
         df_merged['Suggested Dispatch Qty'] = np.where(
             df_merged['RP Type'] == Config.RP_TYPE_RF,
             np.maximum(df_merged['Net Demand'], df_merged['MOQ']),
             0
         )
         
+        # 如果缺貨且Supply source為1/2/4，優先調整派貨量
+        priority_adjustment_mask = (df_merged['Out of Stock Qty'] > 0) & (df_merged['Supply source'].isin(['1', '2', '4']))
+        if priority_adjustment_mask.any():
+            # 可以根據需要調整派貨邏輯
+            pass
+        
         # 添加計算日誌
-        df_merged['Calculation Notes'] = (
-            f"Lead Time: {lead_time} days; "
-            f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        calculation_notes = []
+        calculation_notes.append(f"Lead Time: {lead_time} days")
+        calculation_notes.append(f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 添加缺貨相關信息
+        total_out_of_stock = (df_merged['Out of Stock Qty'] > 0).sum()
+        if total_out_of_stock > 0:
+            calculation_notes.append(f"Total out of stock items: {total_out_of_stock}")
+        
+        df_merged['Calculation Notes'] = '; '.join(calculation_notes)
         
         return df_merged, "Calculation completed successfully"
         
@@ -451,24 +506,45 @@ def main():
         if st.session_state.df_results is not None and not st.session_state.df_results.empty:
             st.subheader(get_text('analysis_results', lang_code))
             
+            # 顯示缺貨通知
+            if 'Out of Stock Qty' in st.session_state.df_results.columns:
+                out_of_stock_items = st.session_state.df_results[st.session_state.df_results['Out of Stock Qty'] > 0]
+                if not out_of_stock_items.empty:
+                    st.warning(f"⚠️ {get_text('out_of_stock_notification', lang_code)}: {len(out_of_stock_items)} items")
+                    
+                    # 顯示具體通知
+                    for _, row in out_of_stock_items.iterrows():
+                        if pd.notna(row.get('Notification Notes', '')):
+                            if row['Supply source'] in Config.SUPPLY_SOURCE_BUYER_NOTIFICATION:
+                                st.error(f"🚨 {row['Notification Notes']}")
+                            elif row['Supply source'] in Config.SUPPLY_SOURCE_RP_TEAM:
+                                st.info(f"💡 {row['Notification Notes']}")
+                                st.warning(get_text('check_d001_availability', lang_code))
+            
             # 顯示結果表格
             display_columns = [
-                'Article', 'Site', 'Group No.', 'RP Type', 'Daily Sales Rate',
-                'Total Demand', 'Net Demand', 'Suggested Dispatch Qty', 'Notes'
+                'Article', 'Site', 'Group No.', 'RP Type', 'Supply source', 'Description p. group',
+                'Daily Sales Rate', 'Total Demand', 'Net Demand', 'Out of Stock Qty', 
+                'Suggested Dispatch Qty', 'Notes'
             ]
             
             available_columns = [col for col in display_columns if col in st.session_state.df_results.columns]
             st.dataframe(st.session_state.df_results[available_columns])
             
-            # 創建摘要統計
+            # 創建摘要統計（包含缺貨信息）
             st.subheader("Summary Statistics")
+            total_out_of_stock = st.session_state.df_results['Out of Stock Qty'].sum() if 'Out of Stock Qty' in st.session_state.df_results.columns else 0
+            out_of_stock_items = (st.session_state.df_results['Out of Stock Qty'] > 0).sum() if 'Out of Stock Qty' in st.session_state.df_results.columns else 0
+            
             summary_stats = pd.DataFrame({
-                'Metric': ['Total Records', 'Total Demand', 'Total Suggested Dispatch', 'Average Daily Sales Rate'],
+                'Metric': ['Total Records', 'Total Demand', 'Total Suggested Dispatch', 'Average Daily Sales Rate', 'Total Out of Stock Qty', 'Out of Stock Items'],
                 'Value': [
                     len(st.session_state.df_results),
                     st.session_state.df_results['Total Demand'].sum(),
                     st.session_state.df_results['Suggested Dispatch Qty'].sum(),
-                    st.session_state.df_results['Daily Sales Rate'].mean()
+                    st.session_state.df_results['Daily Sales Rate'].mean(),
+                    total_out_of_stock,
+                    out_of_stock_items
                 ]
             })
             st.table(summary_stats)
@@ -497,10 +573,11 @@ def main():
             # 匯出功能
             st.subheader(get_text('export_results', lang_code))
             
-            # 創建摘要數據
-            summary_data = st.session_state.df_results.groupby(['Group No.', 'Site']).agg({
+            # 創建摘要數據（包含缺貨信息）
+            summary_data = st.session_state.df_results.groupby(['Group No.', 'Site', 'Supply source']).agg({
                 'Total Demand': 'sum',
                 'Available Stock': 'sum',
+                'Out of Stock Qty': 'sum',
                 'Suggested Dispatch Qty': 'sum'
             }).reset_index()
             

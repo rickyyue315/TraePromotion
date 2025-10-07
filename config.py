@@ -79,6 +79,12 @@ class Config:
     OUTLIER_THRESHOLD = 10000
     STRING_COLUMNS = ['Article', 'Article Description', 'RP Type', 'Site', 'Group No.', 'Target Type']
     
+    # 供應來源配置
+    VALID_SUPPLY_SOURCES = ['1', '2', '4']
+    SUPPLY_SOURCE_BUYER_NOTIFICATION = ['1', '4']  # 需要通知Buyer的供應來源
+    SUPPLY_SOURCE_RP_TEAM = ['2']  # 需要RP team建議的供應來源
+    INVALID_SOURCE_DEFAULT = "無效來源"
+    
     # 安全配置
     ENABLE_FILE_VALIDATION = True
     ENABLE_DATA_CLEANING = True
@@ -134,6 +140,14 @@ TRANSLATIONS = {
         'error_invalid_file_type': 'Invalid file type. Only Excel files are supported',
         'error_data_validation': 'Data validation error',
         'success_file_loaded': 'File loaded successfully',
+        'out_of_stock_notification': 'Out of Stock Notification',
+        'buyer_notification': 'Buyer Notification',
+        'rp_team_suggestion': 'RP Team Suggestion',
+        'stock_out_qty': 'Out of Stock Qty',
+        'supply_source': 'Supply Source',
+        'buyer_group': 'Buyer Group',
+        'invalid_supply_source': 'Invalid Supply Source',
+        'check_d001_availability': 'Please check D001 availability',
         'processing_data': 'Processing data...',
         'calculating_results': 'Calculating results...',
         'generating_visualizations': 'Generating visualizations...',
@@ -176,6 +190,14 @@ TRANSLATIONS = {
         'error_invalid_file_type': '無效的檔案類型。只支援Excel檔案',
         'error_data_validation': '資料驗證錯誤',
         'success_file_loaded': '檔案載入成功',
+        'out_of_stock_notification': '缺貨通知',
+        'buyer_notification': '買家通知',
+        'rp_team_suggestion': 'RP團隊建議',
+        'stock_out_qty': '缺貨數量',
+        'supply_source': '補貨來源',
+        'buyer_group': '買家組別',
+        'invalid_supply_source': '無效補貨來源',
+        'check_d001_availability': '請檢查D001可用性',
         'processing_data': '處理資料中...',
         'calculating_results': '計算結果中...',
         'generating_visualizations': '生成視覺化中...',
@@ -238,7 +260,7 @@ REQUIRED_COLUMNS = {
     'file_a': [
         'Article', 'Article Description', 'RP Type', 'Site', 'MOQ',
         'SaSa Net Stock', 'Pending Received', 'Safety Stock',
-        'Last Month Sold Qty', 'MTD Sold Qty'
+        'Last Month Sold Qty', 'MTD Sold Qty', 'Supply source', 'Description p. group'
     ],
     'file_b_sheet1': [
         'Group No.', 'Article', 'SKU Target', 'Target Type',

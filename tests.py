@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 導入app.py中的函數
 from app import (
-    validate_file_a, validate_file_b, preprocess_data, 
+    validate_inventory_file, validate_file_b, preprocess_data, 
     calculate_business_logic, create_visualizations, export_to_excel
 )
 
@@ -30,7 +30,9 @@ class TestRetailPromotionSystem(unittest.TestCase):
             'Pending Received': [50, 30, 40],
             'Safety Stock': [25, 35, 30],
             'Last Month Sold Qty': [200, 300, 250],
-            'MTD Sold Qty': [150, 200, 175]
+            'MTD Sold Qty': [150, 200, 175],
+            'Supply source': ['1', '2', '4'],
+            'Description p. group': ['Buyer A', 'Buyer B', 'Buyer C']
         })
         
         # 創建有效的檔案B Sheet1數據
@@ -40,7 +42,8 @@ class TestRetailPromotionSystem(unittest.TestCase):
             'SKU Target': [500, 600, 700],
             'Target Type': ['HK', 'MO', 'ALL'],
             'Promotion Days': [30, 30, 30],
-            'Target Cover Days': [7, 7, 7]
+            'Target Cover Days': [7, 7, 7],
+            'Supply source': ['1', '2', '4']
         })
         
         # 創建有效的檔案B Sheet2數據
@@ -48,7 +51,8 @@ class TestRetailPromotionSystem(unittest.TestCase):
             'Site': ['S001', 'S002', 'S003'],
             'Shop Target(HK)': [1000, 1200, 1100],
             'Shop Target(MO)': [800, 900, 850],
-            'Shop Target(ALL)': [1800, 2100, 1950]
+            'Shop Target(ALL)': [1800, 2100, 1950],
+            'Supply source': ['1', '2', '4']
         })
         
         # 創建包含邊界條件的數據
@@ -62,7 +66,9 @@ class TestRetailPromotionSystem(unittest.TestCase):
             'Pending Received': [50, -30, 40],
             'Safety Stock': [25, 35, 30],
             'Last Month Sold Qty': [200000, 0, -100],  # 異常大值、零值、負值
-            'MTD Sold Qty': [150, -50, 300000]
+            'MTD Sold Qty': [150, -50, 300000],
+            'Supply source': ['1', 'invalid', '2'],  # 包含無效來源
+            'Description p. group': ['Buyer A', '', 'Buyer C']  # 包含空值
         })
         
         # 創建缺失欄位的數據
@@ -71,18 +77,51 @@ class TestRetailPromotionSystem(unittest.TestCase):
             'Article Description': ['Product 1', 'Product 2'],
             # 缺少其他必需欄位
         })
+        
+        # 創建缺貨情況的數據
+        self.out_of_stock_data = pd.DataFrame({
+            'Article': ['A001', 'A002', 'A003'],
+            'Article Description': ['Product 1', 'Product 2', 'Product 3'],
+            'RP Type': ['RF', 'ND', 'RF'],
+            'Site': ['S001', 'S002', 'S003'],
+            'MOQ': [10, 20, 15],
+            'SaSa Net Stock': [0, 5, 0],  # 缺貨情況
+            'Pending Received': [0, 10, 5],
+            'Safety Stock': [25, 40, 30],
+            'Last Month Sold Qty': [300, 450, 600],
+            'MTD Sold Qty': [100, 150, 200],
+            'Supply source': ['1', '2', '4'],  # 不同補貨來源
+            'Description p. group': ['Buyer A', 'RP Team', 'Buyer C']
+        })
+        
+        # 創建無效補貨來源的數據
+        self.invalid_supply_source_data = pd.DataFrame({
+            'Article': ['A001', 'A002'],
+            'Article Description': ['Product 1', 'Product 2'],
+            'RP Type': ['RF', 'RF'],
+            'Site': ['S001', 'S002'],
+            'MOQ': [10, 20],
+            'SaSa Net Stock': [50, 75],
+            'Pending Received': [25, 30],
+            'Safety Stock': [25, 40],
+            'Last Month Sold Qty': [300, 450],
+            'MTD Sold Qty': [100, 150],
+            'Supply source': ['invalid', ''],  # 無效和空的補貨來源
+            'Description p. group': ['Buyer A', 'Buyer B']
+        })
     
     def test_validate_file_a_valid(self):
         """測試有效的檔案A驗證"""
-        missing_cols = validate_file_a(self.valid_inventory_data)
+        missing_cols = validate_inventory_file(self.valid_inventory_data)
         self.assertEqual(len(missing_cols), 0, "Valid file A should have no missing columns")
     
     def test_validate_file_a_missing_fields(self):
         """測試檔案A缺失欄位的驗證"""
-        missing_cols = validate_file_a(self.missing_fields_data)
+        missing_cols = validate_inventory_file(self.missing_fields_data)
         self.assertGreater(len(missing_cols), 0, "Missing fields should be detected")
         expected_missing = ['RP Type', 'Site', 'MOQ', 'SaSa Net Stock', 'Pending Received', 
-                           'Safety Stock', 'Last Month Sold Qty', 'MTD Sold Qty']
+                           'Safety Stock', 'Last Month Sold Qty', 'MTD Sold Qty', 
+                           'Supply source', 'Description p. group']
         for col in expected_missing:
             self.assertIn(col, missing_cols, f"Missing column {col} should be detected")
     
@@ -123,6 +162,14 @@ class TestRetailPromotionSystem(unittest.TestCase):
         # 檢查Notes欄位是否被添加
         self.assertIn('Notes', processed_data.columns, "Notes column should be added")
         self.assertTrue(len(processed_data['Notes'].iloc[0]) > 0, "Notes should contain correction information")
+        
+        # 檢查補貨來源處理
+        self.assertEqual(processed_data.loc[0, 'Supply source'], '1', "Valid supply source should be preserved")
+        self.assertEqual(processed_data.loc[1, 'Supply source'], '無效來源', "Invalid supply source should default to '無效來源'")
+        self.assertEqual(processed_data.loc[2, 'Supply source'], '2', "Valid supply source should be preserved")
+        
+        # 檢查買家組別處理
+        self.assertEqual(processed_data.loc[1, 'Description p. group'], '', "Empty buyer group should default to empty string")
     
     def test_business_logic_calculation(self):
         """測試核心業務邏輯計算"""
@@ -142,11 +189,16 @@ class TestRetailPromotionSystem(unittest.TestCase):
         self.assertIn('Total Demand', results.columns, "Total Demand should be calculated")
         self.assertIn('Net Demand', results.columns, "Net Demand should be calculated")
         self.assertIn('Suggested Dispatch Qty', results.columns, "Suggested Dispatch Qty should be calculated")
+        self.assertIn('Out of Stock Qty', results.columns, "Out of Stock Qty should be calculated")
+        self.assertIn('Notification Notes', results.columns, "Notification Notes should be calculated")
+        self.assertIn('Supply source', results.columns, "Supply source should be preserved")
+        self.assertIn('Description p. group', results.columns, "Description p. group should be preserved")
         
         # 驗證計算邏輯
         self.assertTrue(all(results['Daily Sales Rate'] >= 0), "Daily sales rate should be non-negative")
         self.assertTrue(all(results['Total Demand'] >= 0), "Total demand should be non-negative")
         self.assertTrue(all(results['Net Demand'] >= 0), "Net demand should be non-negative")
+        self.assertTrue(all(results['Out of Stock Qty'] >= 0), "Out of stock qty should be non-negative")
         
         # 驗證派貨建議邏輯
         rf_mask = results['RP Type'] == 'RF'
@@ -196,10 +248,11 @@ class TestRetailPromotionSystem(unittest.TestCase):
         )
         
         # 創建摘要數據
-        summary_data = results.groupby(['Group No.', 'Site']).agg({
+        summary_data = results.groupby(['Group No.', 'Site', 'Supply source']).agg({
             'Total Demand': 'sum',
             'Available Stock': 'sum',
-            'Suggested Dispatch Qty': 'sum'
+            'Suggested Dispatch Qty': 'sum',
+            'Out of Stock Qty': 'sum'
         }).reset_index()
         
         # 測試匯出
@@ -247,6 +300,80 @@ class TestRetailPromotionSystem(unittest.TestCase):
         # 驗證結果一致性
         pd.testing.assert_frame_equal(results1, results2, 
                                     "Multiple calculations should produce identical results")
+    
+    def test_out_of_stock_calculation(self):
+        """測試缺貨計算邏輯"""
+        # 預處理缺貨數據
+        inventory_processed = preprocess_data(self.out_of_stock_data)
+        promotion_sku_processed = preprocess_data(self.valid_promotion_sku_data)
+        promotion_shop_processed = preprocess_data(self.valid_promotion_shop_data)
+        
+        # 執行計算
+        results, message = calculate_business_logic(
+            inventory_processed, promotion_sku_processed, promotion_shop_processed
+        )
+        
+        # 驗證缺貨數量計算
+        self.assertFalse(results.empty, "Calculation should produce non-empty results")
+        self.assertIn('Out of Stock Qty', results.columns, "Out of Stock Qty should be calculated")
+        
+        # 檢查缺貨項目
+        out_of_stock_items = results[results['Out of Stock Qty'] > 0]
+        self.assertGreater(len(out_of_stock_items), 0, "Should detect out of stock items")
+        
+        # 檢查通知邏輯
+        buyer_notification_items = results[
+            (results['Supply source'].isin(['1', '4'])) & 
+            (results['Out of Stock Qty'] > 0)
+        ]
+        rp_team_items = results[
+            (results['Supply source'] == '2') & 
+            (results['Out of Stock Qty'] > 0)
+        ]
+        
+        if len(buyer_notification_items) > 0:
+            self.assertTrue(
+                any('缺貨通知：Buyer' in str(note) for note in buyer_notification_items['Notification Notes']),
+                "Buyer notification should be added for supply sources 1 and 4"
+            )
+        
+        if len(rp_team_items) > 0:
+            self.assertTrue(
+                any('RP team建議' in str(note) for note in rp_team_items['Notification Notes']),
+                "RP team suggestion should be added for supply source 2"
+            )
+    
+    def test_invalid_supply_source_handling(self):
+        """測試無效補貨來源的處理"""
+        # 預處理數據
+        inventory_processed = preprocess_data(self.invalid_supply_source_data)
+        promotion_sku_processed = preprocess_data(self.valid_promotion_sku_data)
+        promotion_shop_processed = preprocess_data(self.valid_promotion_shop_data)
+        
+        # 執行計算
+        results, message = calculate_business_logic(
+            inventory_processed, promotion_sku_processed, promotion_shop_processed
+        )
+        
+        # 驗證無效補貨來源被替換為預設值
+        self.assertEqual(results.loc[0, 'Supply source'], '無效來源', 
+                        "Invalid supply source should be replaced with '無效來源'")
+        self.assertEqual(results.loc[1, 'Supply source'], '無效來源', 
+                        "Empty supply source should be replaced with '無效來源'")
+    
+    def test_data_types_with_new_fields(self):
+        """測試包含新欄位的數據類型"""
+        processed_data = preprocess_data(self.valid_inventory_data)
+        
+        # 檢查新欄位的數據類型
+        self.assertTrue(all(isinstance(x, str) for x in processed_data['Supply source']), 
+                       "Supply source should be string type")
+        self.assertTrue(all(isinstance(x, str) for x in processed_data['Description p. group']), 
+                       "Description p. group should be string type")
+        
+        # 檢查新欄位是否存在
+        self.assertIn('Supply source', processed_data.columns, "Supply source column should exist")
+        self.assertIn('Description p. group', processed_data.columns, "Description p. group column should exist")
 
 if __name__ == '__main__':
     # 創建測試套件
