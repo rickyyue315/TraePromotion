@@ -4,600 +4,473 @@ import numpy as np
 import openpyxl
 import matplotlib.pyplot as plt
 import seaborn as sns
-from datetime import datetime, date
 import logging
+from datetime import datetime
 import io
-import sys
-import os
-from config import Config, TRANSLATIONS, ERROR_MESSAGES, SUCCESS_MESSAGES, REQUIRED_PACKAGES, REQUIRED_COLUMNS
 
-# 設置日誌
-logging.basicConfig(
-    level=getattr(logging, Config.LOG_LEVEL),
-    format=Config.LOG_FORMAT,
-    handlers=[
-        logging.FileHandler(Config.get_log_file_path()),
-        logging.StreamHandler()
-    ]
-)
+# --- 日誌記錄設置 ---
+logging.basicConfig(filename='app.log', level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-def get_text(key, lang='en'):
-    """獲取翻譯文本"""
-    return TRANSLATIONS.get(lang, TRANSLATIONS['en']).get(key, key)
+# --- 函數定義 ---
+def find_sheet_name(sheet_names, candidates):
+    """從候選列表中查找有效的工作表名稱。"""
+    for name in candidates:
+        if name in sheet_names:
+            return name
+    return None
 
-def check_dependencies():
-    """檢查依賴包是否安裝"""
-    missing_packages = []
-    for package, requirement in REQUIRED_PACKAGES.items():
-        try:
-            __import__(package)
-        except ImportError:
-            missing_packages.append(requirement)
-    
-    return missing_packages
-
-def load_excel_file(file, sheet_name=None):
-    """載入Excel檔案"""
+def load_data(file_a, file_b):
+    """載入、驗證、清理並合併兩個上傳的 Excel 檔案。"""
     try:
-        if sheet_name:
-            return pd.read_excel(file, sheet_name=sheet_name)
-        else:
-            return pd.read_excel(file)
-    except Exception as e:
-        logging.error(f"Error loading Excel file: {str(e)}")
-        return None
+        # --- 檔案 A 處理 ---
+        df_a = pd.read_excel(file_a, sheet_name=0, dtype={'Article': str, 'Site': str})
+        required_cols_a = [
+            'Article', 'Article Description', 'RP Type', 'Site', 'MOQ', 
+            'SaSa Net Stock', 'Pending Received', 'Safety Stock', 
+            'Last Month Sold Qty', 'MTD Sold Qty', 'Supply source', 'Description p. group'
+        ]
+        if not all(col in df_a.columns for col in required_cols_a):
+            missing_cols = [col for col in required_cols_a if col not in df_a.columns]
+            st.error(f"檔案 A 缺少必要欄位：{', '.join(missing_cols)}")
+            return None, None
 
-def validate_inventory_file(df):
-    """驗證庫存檔案"""
-    missing_columns = [col for col in REQUIRED_COLUMNS['file_a'] if col not in df.columns]
-    return missing_columns
+        # --- 檔案 B 處理 ---
+        xls_b = pd.ExcelFile(file_b)
+        sheet_names_b = xls_b.sheet_names
 
-def validate_file_b(df1, df2):
-    """驗證檔案B的必需欄位"""
-    missing_sheet1 = [col for col in REQUIRED_COLUMNS['file_b_sheet1'] if col not in df1.columns] if df1 is not None else []
-    missing_sheet2 = [col for col in REQUIRED_COLUMNS['file_b_sheet2'] if col not in df2.columns] if df2 is not None else []
-    
-    return missing_sheet1, missing_sheet2
+        sheet1_name = find_sheet_name(sheet_names_b, ['Sheet1', 'Sheet 1'])
+        sheet2_name = find_sheet_name(sheet_names_b, ['Sheet2', 'Sheet 2'])
 
-def preprocess_data(df):
-    """數據預處理"""
-    df_processed = df.copy()
-    notes = []
-    
-    # Article欄位處理
-    if 'Article' in df_processed.columns:
-        df_processed['Article'] = df_processed['Article'].astype(str).str.strip()
-    
-    # 數值欄位處理
-    numeric_columns = Config.QUANTITY_COLUMNS
-    
-    for col in numeric_columns:
-        if col in df_processed.columns:
-            # 轉換為數值類型，無效值填充為0
-            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce').fillna(0)
-            
-            # 負值修正為0
-            negative_mask = df_processed[col] < 0
-            if negative_mask.any():
-                df_processed.loc[negative_mask, col] = 0
-                notes.append(f"{col}: 修正了{negative_mask.sum()}個負值")
-            
-            # 異常值處理（>100000）
-            if col in ['Last Month Sold Qty', 'MTD Sold Qty']:
-                abnormal_mask = df_processed[col] > Config.OUTLIER_THRESHOLD
-                if abnormal_mask.any():
-                    df_processed.loc[abnormal_mask, col] = Config.OUTLIER_THRESHOLD
-                    notes.append(f"{col}: 調整了{abnormal_mask.sum()}個異常值（>{Config.OUTLIER_THRESHOLD}）")
-    
-    # 字串欄位空值處理
-    string_columns = Config.STRING_COLUMNS
-    for col in string_columns:
-        if col in df_processed.columns:
-            df_processed[col] = df_processed[col].fillna('').astype(str)
-    
-    # Supply source 驗證和處理
-    if 'Supply source' in df_processed.columns:
-        # 確保為字串類型
-        df_processed['Supply source'] = df_processed['Supply source'].astype(str).str.strip()
+        if not sheet1_name or not sheet2_name:
+            st.error("檔案 B 必須包含 'Sheet1' (或 'Sheet 1') 和 'Sheet2' (或 'Sheet 2')。")
+            return None, None
         
-        # 驗證有效供應來源
-        invalid_supply_mask = ~df_processed['Supply source'].isin(Config.VALID_SUPPLY_SOURCES)
-        if invalid_supply_mask.any():
-            df_processed.loc[invalid_supply_mask, 'Supply source'] = Config.INVALID_SOURCE_DEFAULT
-            notes.append(f"Supply source: 修正了{invalid_supply_mask.sum()}個無效值")
-    
-    # Description p. group 處理
-    if 'Description p. group' in df_processed.columns:
-        df_processed['Description p. group'] = df_processed['Description p. group'].fillna('').astype(str).str.strip()
-    
-    # 添加Notes欄位
-    df_processed['Notes'] = '; '.join(notes) if notes else 'No data corrections needed'
-    
-    return df_processed
+        df_b1 = pd.read_excel(xls_b, sheet1_name, dtype={'Article': str})
+        required_cols_b1 = ['Group No.', 'Article', 'SKU Target', 'Target Type', 'Promotion Days', 'Target Cover Days']
+        if not all(col in df_b1.columns for col in required_cols_b1):
+            missing_cols = [col for col in required_cols_b1 if col not in df_b1.columns]
+            st.error(f"檔案 B 的 {sheet1_name} 缺少必要欄位：{', '.join(missing_cols)}")
+            return None, None
 
-def calculate_business_logic(df_inventory, df_promotion_sku, df_promotion_shop, lead_time=None):
-    """核心業務邏輯計算"""
-    try:
-        if df_inventory.empty or df_promotion_sku.empty or df_promotion_shop.empty:
-            return pd.DataFrame(), "No valid data to calculate"
+        df_b2 = pd.read_excel(xls_b, sheet2_name, dtype={'Site': str})
+        required_cols_b2 = ['Site', 'Shop Target(HK)', 'Shop Target(MO)', 'Shop Target(ALL)']
+        if not all(col in df_b2.columns for col in required_cols_b2):
+            missing_cols = [col for col in required_cols_b2 if col not in df_b2.columns]
+            st.error(f"檔案 B 的 {sheet2_name} 缺少必要欄位：{', '.join(missing_cols)}")
+            return None, None
+
+        # --- 數據清理與預處理 ---
+        df_a['Notes'] = ''
         
-        # 使用默認lead time如果未提供
-        if lead_time is None:
-            lead_time = Config.DEFAULT_LEAD_TIME
+        # 清理字串欄位
+        for col in ['Article', 'Site']:
+            if col in df_a.columns:
+                df_a[col] = df_a[col].str.strip()
+        if 'Article' in df_b1.columns:
+            df_b1['Article'] = df_b1['Article'].str.strip()
+        if 'Site' in df_b2.columns:
+            df_b2['Site'] = df_b2['Site'].str.strip()
+
+        # 處理數值欄位
+        numeric_cols_a = ['MOQ', 'SaSa Net Stock', 'Pending Received', 'Safety Stock', 'Last Month Sold Qty', 'MTD Sold Qty']
+        for col in numeric_cols_a:
+            if col in df_a.columns:
+                df_a['Notes'] += np.where(pd.to_numeric(df_a[col], errors='coerce').isnull(), f'{col} 包含無效值; ', '')
+                df_a[col] = pd.to_numeric(df_a[col], errors='coerce').fillna(0).astype(int)
+                df_a['Notes'] += np.where(df_a[col] < 0, f'{col} 修正為 0; ', '')
+                df_a[col] = np.where(df_a[col] < 0, 0, df_a[col])
+
+        # 處理銷量異常
+        if 'Last Month Sold Qty' in df_a.columns:
+            df_a['Notes'] += np.where(df_a['Last Month Sold Qty'] > 100000, '銷量異常調整; ', '')
+            df_a['Last Month Sold Qty'] = np.where(df_a['Last Month Sold Qty'] > 100000, 100000, df_a['Last Month Sold Qty'])
+
+        # --- 合併數據 ---
+        df_merged = pd.merge(df_a, df_b1, on='Article', how='left')
+        df_merged = pd.merge(df_merged, df_b2, on='Site', how='left')
+
+        # 填充合併後產生的 NaN
+        fill_cols = list(df_b1.columns) + list(df_b2.columns)
+        fill_cols = [c for c in fill_cols if c not in ['Article', 'Site']]
         
-        # 合併數據
-        df_merged = df_inventory.merge(
-            df_promotion_sku, 
-            on='Article', 
-            how='left',
-            suffixes=('', '_promo')
-        )
-        
-        df_merged = df_merged.merge(
-            df_promotion_shop,
-            on='Site',
-            how='left',
-            suffixes=('', '_shop')
-        )
-        
-        # 填充缺失值
-        fill_columns = ['SKU Target', 'Promotion Days', 'Target Cover Days', 
-                       'Shop Target(HK)', 'Shop Target(MO)', 'Shop Target(ALL)']
-        for col in fill_columns:
+        for col in fill_cols:
             if col in df_merged.columns:
-                df_merged[col] = df_merged[col].fillna(0)
+                if pd.api.types.is_numeric_dtype(df_merged[col]):
+                    df_merged[col] = df_merged[col].fillna(0)
+                else:
+                    df_merged[col] = df_merged[col].fillna('')
         
-        # 計算日常銷售率
-        current_day = date.today().day
-        
-        df_merged['Daily Sales Rate'] = np.where(
-            (df_merged['Last Month Sold Qty'] > 0) | (df_merged['MTD Sold Qty'] > 0),
-            (df_merged['Last Month Sold Qty'] / Config.DAYS_IN_MONTH + df_merged['MTD Sold Qty'] / current_day) / 2,
-            0
-        )
-        
-        # 計算目標類型調整係數
-        df_merged['Target Coefficient'] = df_merged['Target Type'].map(Config.TARGET_TYPE_MULTIPLIERS).fillna(1)
-        
-        # 計算日常銷售需求
-        df_merged['Daily Sales Demand'] = df_merged['Daily Sales Rate'] * (
-            df_merged['Promotion Days'] + df_merged['Target Cover Days'] + lead_time
-        )
-        
-        # 計算推廣特定需求
-        df_merged['Promotion Specific Demand'] = (
-            df_merged['SKU Target'] * df_merged['Target Coefficient']
-        )
-        
-        # 添加店鋪目標
-        df_merged['Shop Target'] = np.where(
-            df_merged['Target Type'] == 'HK', df_merged['Shop Target(HK)'],
-            np.where(df_merged['Target Type'] == 'MO', df_merged['Shop Target(MO)'],
-                    df_merged['Shop Target(ALL)'])
-        )
-        
-        # 總需求
-        df_merged['Total Demand'] = (
-            df_merged['Daily Sales Demand'] + 
-            df_merged['Promotion Specific Demand'] + 
-            df_merged['Shop Target']
-        )
-        
-        # 可用庫存
-        df_merged['Available Stock'] = (
-            df_merged['SaSa Net Stock'] + df_merged['Pending Received']
-        )
-        
-        # 淨需求
-        df_merged['Net Demand'] = np.maximum(
-            0,
-            df_merged['Total Demand'] - df_merged['Available Stock'] + df_merged['Safety Stock']
-        )
-        
-        # 計算缺貨數量
-        df_merged['Out of Stock Qty'] = np.maximum(
-            0,
-            df_merged['Net Demand'] - df_merged['SaSa Net Stock'] - df_merged['Pending Received']
-        )
-        
-        # 條件性通知與建議
-        df_merged['Notification Notes'] = ''
-        
-        # 處理Supply source為1或4的情況（通知Buyer）
-        buyer_notification_mask = df_merged['Supply source'].isin(Config.SUPPLY_SOURCE_BUYER_NOTIFICATION)
-        if buyer_notification_mask.any():
-            buyer_notifications = []
-            for idx in df_merged[buyer_notification_mask].index:
-                out_of_stock = df_merged.loc[idx, 'Out of Stock Qty']
-                buyer_group = df_merged.loc[idx, 'Description p. group']
-                notification = f"缺貨通知：Buyer {buyer_group}，缺貨數量 {out_of_stock}"
-                buyer_notifications.append(notification)
-                df_merged.loc[idx, 'Notification Notes'] = notification
-        
-        # 處理Supply source為2的情況（RP team建議）
-        rp_team_mask = df_merged['Supply source'].isin(Config.SUPPLY_SOURCE_RP_TEAM)
-        if rp_team_mask.any():
-            for idx in df_merged[rp_team_mask].index:
-                out_of_stock = df_merged.loc[idx, 'Out of Stock Qty']
-                suggestion = f"RP team建議：對照D001庫存進行補貨，缺貨數量 {out_of_stock}"
-                df_merged.loc[idx, 'Notification Notes'] = suggestion
-        
-        # 派貨建議（整合缺貨邏輯）
-        df_merged['Suggested Dispatch Qty'] = np.where(
-            df_merged['RP Type'] == Config.RP_TYPE_RF,
-            np.maximum(df_merged['Net Demand'], df_merged['MOQ']),
-            0
-        )
-        
-        # 如果缺貨且Supply source為1/2/4，優先調整派貨量
-        priority_adjustment_mask = (df_merged['Out of Stock Qty'] > 0) & (df_merged['Supply source'].isin(['1', '2', '4']))
-        if priority_adjustment_mask.any():
-            # 可以根據需要調整派貨邏輯
-            pass
-        
-        # 添加計算日誌
-        calculation_notes = []
-        calculation_notes.append(f"Lead Time: {lead_time} days")
-        calculation_notes.append(f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 添加缺貨相關信息
-        total_out_of_stock = (df_merged['Out of Stock Qty'] > 0).sum()
-        if total_out_of_stock > 0:
-            calculation_notes.append(f"Total out of stock items: {total_out_of_stock}")
-        
-        df_merged['Calculation Notes'] = '; '.join(calculation_notes)
-        
-        return df_merged, "Calculation completed successfully"
-        
+        if 'Group No.' in df_merged.columns:
+             df_merged['Notes'] += np.where(df_merged['Group No.'].fillna('') == '', '未匹配到推廣目標; ', '')
+
+        return df_merged, None
+
     except Exception as e:
-        logging.error(f"Error in business logic calculation: {str(e)}")
-        return pd.DataFrame(), f"Calculation error: {str(e)}"
+        st.error(f"處理檔案時發生錯誤：{e}")
+        logging.error(f"File processing error: {e}", exc_info=True)
+        return None, None
 
-def create_visualizations(df, lang='en'):
-    """創建視覺化圖表"""
-    if df.empty:
-        return None
-    
-    fig, axes = plt.subplots(2, 2, figsize=Config.VISUALIZATION_FIGSIZE)
-    fig.suptitle(get_text('visualization', lang), fontsize=Config.VISUALIZATION_TITLE_FONT_SIZE)
-    
-    # 1. 柱狀圖：按Group No.顯示總需求 vs 總庫存
-    if 'Group No.' in df.columns:
-        group_summary = df.groupby('Group No.').agg({
-            'Total Demand': 'sum',
-            'Available Stock': 'sum'
-        }).reset_index()
+def calculate_demand(df, lead_time):
+    """計算推廣貨量需求。"""
+    try:
+        if df is None or df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        # 複製數據框以避免修改原始數據
+        df_calc = df.copy()
+
+        # 1. 計算每日銷售率
+        df_calc['Daily Sales Rate'] = (df_calc['Last Month Sold Qty'] / 30).apply(lambda x: max(0, x))
+
+        # 2. 確定推廣目標係數
+        df_calc['Site Target %'] = df_calc.apply(
+            lambda row: row['Shop Target(HK)'] if row['Target Type'] == 'HK'
+            else (row['Shop Target(MO)'] if row['Target Type'] == 'MO'
+                  else (row['Shop Target(ALL)'] if row['Target Type'] == 'ALL' else 0)),
+            axis=1
+        )
+
+        # 3. 計算日常銷售需求
+        df_calc['Regular Demand'] = df_calc['Daily Sales Rate'] * (df_calc['Target Cover Days'] + lead_time)
+
+        # 4. 計算推廣特定需求
+        df_calc['Promo Demand'] = df_calc['SKU Target'] * df_calc['Site Target %']
+
+        # 5. 計算總需求
+        # 對於多 SKU 組，需要先聚合
+        group_sku_counts = df_calc.groupby('Group No.')['Article'].nunique()
+        multi_sku_groups = group_sku_counts[group_sku_counts > 1].index
+
+        # 初始化 Total Demand
+        df_calc['Total Demand'] = 0
+
+        # 單 SKU 組
+        single_sku_mask = ~df_calc['Group No.'].isin(multi_sku_groups)
+        df_calc.loc[single_sku_mask, 'Total Demand'] = df_calc.loc[single_sku_mask, 'Regular Demand'] + df_calc.loc[single_sku_mask, 'Promo Demand']
+
+        # 多 SKU 組
+        if not multi_sku_groups.empty:
+            # 按 Group No. 和 Site 聚合 Regular Demand
+            agg_regular_demand = df_calc[df_calc['Group No.'].isin(multi_sku_groups)].groupby(['Group No.', 'Site'])['Regular Demand'].sum().reset_index()
+            agg_regular_demand.rename(columns={'Regular Demand': 'Aggregated Regular Demand'}, inplace=True)
+
+            # 將聚合後的需求合併回主數據框
+            df_calc = pd.merge(df_calc, agg_regular_demand, on=['Group No.', 'Site'], how='left')
+            df_calc['Aggregated Regular Demand'].fillna(0, inplace=True)
+
+            # 計算多 SKU 組的 Total Demand
+            multi_sku_mask = df_calc['Group No.'].isin(multi_sku_groups)
+            df_calc.loc[multi_sku_mask, 'Total Demand'] = df_calc.loc[multi_sku_mask, 'Aggregated Regular Demand'] + df_calc.loc[multi_sku_mask, 'Promo Demand']
+            df_calc.drop(columns=['Aggregated Regular Demand'], inplace=True)
+
+
+        # 6. 計算淨需求
+        df_calc['Net Demand'] = df_calc['Total Demand'] - (df_calc['SaSa Net Stock'] + df_calc['Pending Received']) + df_calc['Safety Stock']
+
+        # 7. 計算派貨建議
+        # 新邏輯: 派貨數量需為 MOQ 的倍數，且不小於 MOQ
         
-        x = range(len(group_summary))
-        width = Config.BAR_CHART_WIDTH
+        # 步驟 1: 確定基礎派貨量，至少為 Net Demand 和 MOQ 中的較大者
+        base_dispatch_qty = np.maximum(df_calc['Net Demand'], df_calc['MOQ'])
         
-        axes[0, 0].bar([i - width/2 for i in x], group_summary['Total Demand'], 
-                      width, label=get_text('total_demand_vs_inventory', lang), color=Config.CHART_COLORS[0])
-        axes[0, 0].bar([i + width/2 for i in x], group_summary['Available Stock'], 
-                      width, label='Total Inventory', color=Config.CHART_COLORS[1])
-        
-        axes[0, 0].set_xlabel('Group No.')
-        axes[0, 0].set_ylabel('Quantity')
-        axes[0, 0].set_title('Total Demand vs Inventory by Group')
-        axes[0, 0].legend()
-        axes[0, 0].set_xticks(x)
-        axes[0, 0].set_xticklabels(group_summary['Group No.'], rotation=45)
-    
-    # 2. 餅圖：派貨建議分佈
-    if 'RP Type' in df.columns and 'Suggested Dispatch Qty' in df.columns:
-        dispatch_summary = df.groupby('RP Type')['Suggested Dispatch Qty'].sum()
-        
-        axes[0, 1].pie(dispatch_summary.values, labels=dispatch_summary.index, 
-                      autopct='%1.1f%%', startangle=90, colors=Config.PIE_CHART_COLORS)
-        axes[0, 1].set_title('Distribution Recommendations Distribution')
-    
-    # 3. 熱力圖：按Site和Article顯示淨需求強度
-    if 'Site' in df.columns and 'Article' in df.columns and 'Net Demand' in df.columns:
-        # 取前20個數據點以避免圖表過於擁擠
-        heatmap_data = df.nlargest(Config.MAX_HEATMAP_DATA_POINTS, 'Net Demand')[['Site', 'Article', 'Net Demand']]
-        heatmap_pivot = heatmap_data.pivot_table(
-            values='Net Demand', 
-            index='Site', 
-            columns='Article', 
-            aggfunc='sum',
-            fill_value=0
+        # 步驟 2: 將基礎派貨量向上取整至 MOQ 的最接近倍數
+        moq = df_calc['MOQ']
+        # 為避免除以零的錯誤，只在 MOQ > 0 時執行計算
+        final_dispatch_qty = np.where(
+            moq > 0,
+            np.ceil(base_dispatch_qty / moq) * moq,
+            base_dispatch_qty # 若 MOQ 為 0，則回退到基礎派貨量
         )
         
-        sns.heatmap(heatmap_pivot, annot=True, fmt='.0f', cmap=Config.HEATMAP_COLORMAP, 
-                   ax=axes[1, 0], cbar_kws={'label': 'Net Demand'})
-        axes[1, 0].set_title('Net Demand Intensity Heatmap')
-        axes[1, 0].set_xlabel('Article')
-        axes[1, 0].set_ylabel('Site')
-    
-    # 4. 散點圖：總需求 vs 建議派貨量
-    if 'Total Demand' in df.columns and 'Suggested Dispatch Qty' in df.columns:
-        # 限制資料點數避免效能問題
-        if len(df) > Config.MAX_SCATTER_POINTS:
-            df_sample = df.sample(n=Config.MAX_SCATTER_POINTS, random_state=42)
+        # 步驟 3: 僅對 RP Type 為 'RF' 的項目應用此邏輯
+        df_calc['Suggested Dispatch Qty'] = np.where(
+            df_calc['RP Type'] == 'RF',
+            final_dispatch_qty,
+            0
+        )
+        
+        # 步驟 4: 清理數據，確保為非負整數
+        df_calc['Suggested Dispatch Qty'] = df_calc['Suggested Dispatch Qty'].clip(lower=0).fillna(0).astype(int)
+
+        # 8. 確定派貨類型
+        df_calc['Dispatch Type'] = np.where(
+            df_calc['Site'] == 'D001',
+            'D001',
+            np.where(
+                df_calc['RP Type'] == 'ND',
+                'ND',
+                np.where(
+                    df_calc['Supply source'].isin([1, 4]),
+                    'Buyer需要訂貨',
+                    np.where(df_calc['Supply source'] == 2, '需生成 DN', '')
+                )
+            )
+        )
+        
+        # 更新 Notes
+        df_calc['Notes'] += f'Lead Time={lead_time}日; '
+
+        # 9. 聚合摘要表 (按 Group No. 和 SKU)
+        # 1. 分離 D001 和非 D001 數據
+        df_non_d001 = df_calc[df_calc['Site'] != 'D001'].copy()
+        df_d001 = df_calc[df_calc['Site'] == 'D001'].copy()
+
+        # 2. 從非 D001 數據創建基礎總結
+        summary_base = df_non_d001.groupby(['Group No.', 'Article']).agg(
+            Total_Demand=('Total Demand', 'sum'),
+            Total_Stock=('SaSa Net Stock', 'sum'),
+            Total_Pending=('Pending Received', 'sum'),
+            Total_Dispatch=('Suggested Dispatch Qty', 'sum')
+        ).reset_index()
+
+        # 3. 創建 D001 庫存總結
+        if not df_d001.empty:
+            d001_stock_cols = ['SaSa Net Stock', 'In Quality Insp.', 'Blocked', 'Pending Received']
+            for col in d001_stock_cols:
+                if col not in df_d001.columns:
+                    df_d001[col] = 0
+            
+            d001_summary = df_d001.groupby(['Group No.', 'Article']).agg(
+                D001_SaSa_Net_Stock=('SaSa Net Stock', 'sum'),
+                D001_In_Quality_Insp=('In Quality Insp.', 'sum'),
+                D001_Blocked=('Blocked', 'sum'),
+                D001_Pending_Received=('Pending Received', 'sum')
+            ).reset_index()
         else:
-            df_sample = df
-        
-        axes[1, 1].scatter(df_sample['Total Demand'], df_sample['Suggested Dispatch Qty'], 
-                          alpha=Config.SCATTER_ALPHA, color=Config.SCATTER_COLOR, s=Config.SCATTER_SIZE)
-        axes[1, 1].set_xlabel('Total Demand')
-        axes[1, 1].set_ylabel('Suggested Dispatch Qty')
-        axes[1, 1].set_title('Total Demand vs Suggested Dispatch')
-        
-        # 添加趨勢線
-        z = np.polyfit(df_sample['Total Demand'], df_sample['Suggested Dispatch Qty'], 1)
-        p = np.poly1d(z)
-        axes[1, 1].plot(df_sample['Total Demand'], p(df_sample['Total Demand']), "r--", alpha=Config.TRENDLINE_ALPHA)
-    
-    plt.tight_layout()
-    return fig
+            d001_summary = pd.DataFrame(columns=['Group No.', 'Article', 'D001_SaSa_Net_Stock', 'D001_In_Quality_Insp', 'D001_Blocked', 'D001_Pending_Received'])
 
-def export_to_excel(df_results, df_summary):
-    """匯出結果到Excel"""
-    output = io.BytesIO()
-    
-    with pd.ExcelWriter(output, engine=Config.EXCEL_ENGINE) as writer:
-        # 主要結果
-        df_results.to_excel(writer, sheet_name=Config.EXCEL_SHEET_ANALYSIS, index=False)
+        # 4. 合併基礎總結和 D001 庫存
+        summary_final = pd.merge(summary_base, d001_summary, on=['Group No.', 'Article'], how='left')
+
+        # 5. 填充 NaN 並設置數據類型
+        fill_cols = ['D001_SaSa_Net_Stock', 'D001_In_Quality_Insp', 'D001_Blocked', 'D001_Pending_Received']
+        for col in fill_cols:
+            summary_final[col] = summary_final[col].fillna(0).astype(int)
+
+        # 6. 添加計算欄位
+        summary_final['Total_Stock_Available'] = summary_final['Total_Stock'] + summary_final['Total_Pending']
         
-        # 摘要數據
-        if not df_summary.empty:
-            df_summary.to_excel(writer, sheet_name=Config.EXCEL_SHEET_SUMMARY, index=False)
-    
-    output.seek(0)
-    return output
+        # 更新 Out_of_Stock_Warning 邏輯
+        # 優先級 1: 檢查 D001 是否有足夠的庫存來應對總派貨量
+        # 優先級 2: 如果 D001 庫存充足，再檢查非 D001 門市的庫存是否滿足其需求
+        summary_final['Out_of_Stock_Warning'] = np.where(
+            summary_final['Total_Dispatch'] > summary_final['D001_SaSa_Net_Stock'],
+            'D001 缺貨',
+            np.where(summary_final['Total_Demand'] > summary_final['Total_Stock_Available'], 'Y', 'N')
+        )
 
-@st.cache_data(ttl=Config.CACHE_TTL)
-def load_data_cached(file, file_type):
-    """快取資料載入"""
-    return pd.read_excel(file, sheet_name=0)
+        # 將 'Article' 重命名為 'SKU'
+        summary_final.rename(columns={'Article': 'SKU'}, inplace=True)
 
-def main():
-    # 設置頁面配置
-    st.set_page_config(
-        page_title=Config.APP_NAME,
-        page_icon=Config.PAGE_ICON,
-        layout=Config.LAYOUT,
-        initial_sidebar_state=Config.INITIAL_SIDEBAR_STATE
-    )
+        # 重新排序欄位
+        final_cols = [
+            'Group No.', 'SKU', 'Total_Demand', 'Total_Stock', 'Total_Pending', 'Total_Stock_Available', 'Total_Dispatch',
+            'D001_SaSa_Net_Stock', 'D001_In_Quality_Insp', 'D001_Blocked', 'D001_Pending_Received', 'Out_of_Stock_Warning'
+        ]
+        summary_final = summary_final[final_cols]
+
+        return df_calc, summary_final
+    except Exception as e:
+        st.error(f"計算需求時發生錯誤：{e}")
+        logging.error(f"Demand calculation error: {e}", exc_info=True)
+        return pd.DataFrame(), pd.DataFrame()
+
+
+# --- Streamlit UI ---
+st.set_page_config(layout="wide", page_title="零售推廣目標檢視及派貨系統")
+
+# --- 側邊欄 ---
+with st.sidebar:
+    st.header("開發者資訊")
+    st.write("姓名：Ricky")
+    st.write("當前版本：v1.0")
     
-    # 初始化會話狀態
-    if 'analysis_results' not in st.session_state:
-        st.session_state.analysis_results = None
-    if 'summary_results' not in st.session_state:
-        st.session_state.summary_results = None
-    
-    # 檢查依賴包
-    missing_deps = check_dependencies()
-    if missing_deps:
-        st.error(f"Missing required packages: {', '.join(missing_deps)}")
-        st.info("Please install missing packages using: pip install -r requirements.txt")
+    st.header("參數設定")
+    lead_time = st.slider("自訂 Lead Time (日)", min_value=2.0, max_value=5.0, value=2.0, step=0.5)
+
+    st.header("檔案上傳注意事項")
+    st.info("請確保上傳的檔案符合以下格式要求：")
+    with st.expander("檔案 A (庫存與銷售) 注意事項", expanded=False):
+        st.markdown("""
+        - **必要欄位**: 必須包含 `Article`, `Site`, `SaSa Net Stock`, `Pending Received`, `MOQ`, `RP Type`, `Last Month Sold Qty` 等。
+        - **資料格式**: 
+            - `Article` 和 `Site` 會自動清除前後空格。
+            - 數值欄位 (如庫存、銷量) 中的非數字或負數會被視為 0。
+        """)
+    with st.expander("檔案 B (推廣目標) 注意事項", expanded=False):
+        st.markdown("""
+        - **工作表**: 必須包含 `Sheet1` 和 `Sheet2`。
+        - **Sheet1 欄位**: 需有 `Group No.`, `Article`, `SKU Target` 等。
+        - **Sheet2 欄位**: 需有 `Site`, `Shop Target(HK)` 等。
+        """)
+
+# --- 主區域 ---
+st.title("零售推廣目標檢視及派貨系統")
+
+# --- 檔案上傳 ---
+uploaded_file_a = st.file_uploader("上傳庫存與銷售檔案 (A)", type=["xlsx"])
+uploaded_file_b = st.file_uploader("上傳推廣目標檔案 (B)", type=["xlsx"])
+
+# 初始化 session state
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+    st.session_state.df_merged = None
+    st.session_state.results = None
+    st.session_state.summary = None
+
+if uploaded_file_a and uploaded_file_b:
+    df_merged, _ = load_data(uploaded_file_a, uploaded_file_b)
+    if df_merged is not None:
+        st.session_state.df_merged = df_merged
+        st.session_state.data_loaded = True
+
+# --- 資料預覽 ---
+with st.expander("資料預覽 (前 10 行)", expanded=False):
+    if st.session_state.data_loaded:
+        st.dataframe(st.session_state.df_merged.head(10), use_container_width=True)
+    else:
+        st.info("請上傳兩個檔案以預覽資料。")
+
+# --- 分析觸發 ---
+if st.button("開始分析"):
+    if st.session_state.data_loaded:
+        progress_bar = st.progress(0, text="分析中，請稍候...")
+        
+        # 執行計算
+        results, summary = calculate_demand(st.session_state.df_merged, lead_time)
+        st.session_state.results = results
+        st.session_state.summary = summary
+        
+        progress_bar.progress(100, text="分析完成！")
+        st.success("✅ 分析完成！")
+    else:
+        st.error("錯誤：請先上傳兩個必要的 Excel 檔案。")
+
+# --- 結果顯示 ---
+with st.expander("詳細計算結果", expanded=True):
+    if st.session_state.results is not None:
+        st.dataframe(st.session_state.results, use_container_width=True)
+    else:
+        st.info("點擊「開始分析」以生成結果。")
+
+with st.expander("總結報告", expanded=True):
+    if st.session_state.summary is not None:
+        st.dataframe(st.session_state.summary, use_container_width=True)
+    else:
+        st.info("點擊「開始分析」以生成總結報告。")
+
+def create_visualizations(results_df, summary_df):
+    """根據分析結果創建並顯示多個視覺化圖表。"""
+    st.header("Visualization Analysis")
+
+    if results_df.empty:
+        st.info("No data available for visualization.")
         return
-    
-    # 語言選擇
-    lang = st.sidebar.selectbox("Language / 語言", ["English", "中文"])
-    lang_code = "en" if lang == "English" else "zh"
-    
-    # 側邊欄
-    with st.sidebar:
-        st.title(get_text('system_info', lang_code))
-        st.info(f"{get_text('developer', lang_code)}\n{get_text('version', lang_code)}")
-        
-        st.subheader(get_text('quick_navigation', lang_code))
-        page = st.radio("", [
-            get_text('file_upload', lang_code),
-            get_text('analysis_result', lang_code)
-        ])
-        
-        # 參數設置
-        st.subheader("Parameters")
-        lead_time = st.slider(
-            get_text('lead_time_setting', lang_code),
-            min_value=Config.LEAD_TIME_MIN,
-            max_value=Config.LEAD_TIME_MAX,
-            value=Config.DEFAULT_LEAD_TIME,
-            step=Config.LEAD_TIME_STEP
-        )
-    
-    # 主標題
-    st.title(get_text('title', lang_code))
-    
-    # 初始化session state
-    if 'df_inventory' not in st.session_state:
-        st.session_state.df_inventory = None
-    if 'df_promotion_sku' not in st.session_state:
-        st.session_state.df_promotion_sku = None
-    if 'df_promotion_shop' not in st.session_state:
-        st.session_state.df_promotion_shop = None
-    if 'df_results' not in st.session_state:
-        st.session_state.df_results = None
-    
-    if page == get_text('file_upload', lang_code):
-        # 檔案上傳區域
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader(get_text('upload_inventory', lang_code))
-            file_a = st.file_uploader(
-                get_text('upload_inventory', lang_code),
-                type=['xlsx'],
-                key='file_a'
-            )
-        
-        with col2:
-            st.subheader(get_text('upload_promotion', lang_code))
-            file_b = st.file_uploader(
-                get_text('upload_promotion', lang_code),
-                type=['xlsx'],
-                key='file_b'
-            )
-        
-        if file_a and file_b:
-            # 載入檔案A
-            df_inventory_raw = load_excel_file(file_a)
-            if df_inventory_raw is not None:
-                # 驗證檔案A
-                missing_cols_a = validate_file_a(df_inventory_raw)
-                if missing_cols_a:
-                    st.error(f"{get_text('missing_fields', lang_code)} in File A: {', '.join(missing_cols_a)}")
-                else:
-                    # 預處理檔案A
-                    st.session_state.df_inventory = preprocess_data(df_inventory_raw)
-                    st.success("File A loaded and validated successfully")
-            
-            # 載入檔案B（兩個sheet）
-            try:
-                df_promotion_sku_raw = load_excel_file(file_b, sheet_name=0)
-                df_promotion_shop_raw = load_excel_file(file_b, sheet_name=1)
-                
-                if df_promotion_sku_raw is not None and df_promotion_shop_raw is not None:
-                    # 驗證檔案B
-                    missing_sheet1, missing_sheet2 = validate_file_b(df_promotion_sku_raw, df_promotion_shop_raw)
-                    
-                    if missing_sheet1 or missing_sheet2:
-                        error_msg = f"{get_text('missing_fields', lang_code)} in File B: "
-                        if missing_sheet1:
-                            error_msg += f"Sheet1: {', '.join(missing_sheet1)}; "
-                        if missing_sheet2:
-                            error_msg += f"Sheet2: {', '.join(missing_sheet2)}"
-                        st.error(error_msg)
-                    else:
-                        # 預處理檔案B
-                        st.session_state.df_promotion_sku = preprocess_data(df_promotion_sku_raw)
-                        st.session_state.df_promotion_shop = preprocess_data(df_promotion_shop_raw)
-                        st.success("File B loaded and validated successfully")
-            except Exception as e:
-                st.error(f"Error loading File B: {str(e)}")
-        
-        # 顯示數據預覽
-        if st.session_state.df_inventory is not None:
-            st.subheader(get_text('data_preview', lang_code))
-            st.dataframe(st.session_state.df_inventory.head(10))
-        
-        # 分析按鈕
-        if (st.session_state.df_inventory is not None and 
-            st.session_state.df_promotion_sku is not None and 
-            st.session_state.df_promotion_shop is not None):
-            
-            if st.button(get_text('start_analysis', lang_code), type="primary"):
-                with st.spinner("Processing..."):
-                    progress_bar = st.progress(0)
-                    
-                    # 執行分析
-                    progress_bar.progress(30)
-                    df_results, message = calculate_business_logic(
-                        st.session_state.df_inventory,
-                        st.session_state.df_promotion_sku,
-                        st.session_state.df_promotion_shop,
-                        lead_time
-                    )
-                    
-                    progress_bar.progress(70)
-                    st.session_state.df_results = df_results
-                    
-                    progress_bar.progress(100)
-                    
-                    if not df_results.empty:
-                        st.success(get_text('analysis_complete', lang_code))
-                        st.info(f"Processed {len(df_results)} records")
-                    else:
-                        st.warning(get_text('no_valid_data', lang_code))
-    
-    else:  # Analysis Result page
-        if st.session_state.df_results is not None and not st.session_state.df_results.empty:
-            st.subheader(get_text('analysis_results', lang_code))
-            
-            # 顯示缺貨通知
-            if 'Out of Stock Qty' in st.session_state.df_results.columns:
-                out_of_stock_items = st.session_state.df_results[st.session_state.df_results['Out of Stock Qty'] > 0]
-                if not out_of_stock_items.empty:
-                    st.warning(f"⚠️ {get_text('out_of_stock_notification', lang_code)}: {len(out_of_stock_items)} items")
-                    
-                    # 顯示具體通知
-                    for _, row in out_of_stock_items.iterrows():
-                        if pd.notna(row.get('Notification Notes', '')):
-                            if row['Supply source'] in Config.SUPPLY_SOURCE_BUYER_NOTIFICATION:
-                                st.error(f"🚨 {row['Notification Notes']}")
-                            elif row['Supply source'] in Config.SUPPLY_SOURCE_RP_TEAM:
-                                st.info(f"💡 {row['Notification Notes']}")
-                                st.warning(get_text('check_d001_availability', lang_code))
-            
-            # 顯示結果表格
-            display_columns = [
-                'Article', 'Site', 'Group No.', 'RP Type', 'Supply source', 'Description p. group',
-                'Daily Sales Rate', 'Total Demand', 'Net Demand', 'Out of Stock Qty', 
-                'Suggested Dispatch Qty', 'Notes'
-            ]
-            
-            available_columns = [col for col in display_columns if col in st.session_state.df_results.columns]
-            st.dataframe(st.session_state.df_results[available_columns])
-            
-            # 創建摘要統計（包含缺貨信息）
-            st.subheader("Summary Statistics")
-            total_out_of_stock = st.session_state.df_results['Out of Stock Qty'].sum() if 'Out of Stock Qty' in st.session_state.df_results.columns else 0
-            out_of_stock_items = (st.session_state.df_results['Out of Stock Qty'] > 0).sum() if 'Out of Stock Qty' in st.session_state.df_results.columns else 0
-            
-            summary_stats = pd.DataFrame({
-                'Metric': ['Total Records', 'Total Demand', 'Total Suggested Dispatch', 'Average Daily Sales Rate', 'Total Out of Stock Qty', 'Out of Stock Items'],
-                'Value': [
-                    len(st.session_state.df_results),
-                    st.session_state.df_results['Total Demand'].sum(),
-                    st.session_state.df_results['Suggested Dispatch Qty'].sum(),
-                    st.session_state.df_results['Daily Sales Rate'].mean(),
-                    total_out_of_stock,
-                    out_of_stock_items
-                ]
-            })
-            st.table(summary_stats)
-            
-            # 視覺化
-            st.subheader(get_text('visualization', lang_code))
-            
-            # 產品組別選擇器
-            if 'Group No.' in st.session_state.df_results.columns:
-                unique_groups = ['All'] + sorted(st.session_state.df_results['Group No.'].unique().tolist())
-                selected_group = st.selectbox(get_text('select_group', lang_code), unique_groups)
-                
-                # 過濾數據
-                if selected_group != 'All':
-                    viz_data = st.session_state.df_results[st.session_state.df_results['Group No.'] == selected_group]
-                else:
-                    viz_data = st.session_state.df_results
-                
-                # 創建圖表
-                fig = create_visualizations(viz_data, lang_code)
-                if fig:
-                    st.pyplot(fig)
-                else:
-                    st.info(get_text('no_visualization_data', lang_code))
-            
-            # 匯出功能
-            st.subheader(get_text('export_results', lang_code))
-            
-            # 創建摘要數據（包含缺貨信息）
-            summary_data = st.session_state.df_results.groupby(['Group No.', 'Site', 'Supply source']).agg({
-                'Total Demand': 'sum',
-                'Available Stock': 'sum',
-                'Out of Stock Qty': 'sum',
-                'Suggested Dispatch Qty': 'sum'
-            }).reset_index()
-            
-            excel_file = export_to_excel(st.session_state.df_results, summary_data)
-            
-            st.download_button(
-                label=get_text('download_report', lang_code),
-                data=excel_file,
-                file_name=f"Promotion_Demand_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-        else:
-            st.warning(get_text('no_valid_data', lang_code))
-    
-    # 更新檢查（側邊欄底部）
-    st.sidebar.markdown("---")
-    if st.sidebar.button(get_text('check_update', lang_code)):
-        st.sidebar.info(f"{get_text('current_version', lang_code)}: v1.0")
-        st.sidebar.success(get_text('up_to_date', lang_code))
 
-if __name__ == "__main__":
-    main()
+    # --- 過濫器 ---
+    group_options = ["All"] + sorted(results_df['Group No.'].unique().tolist())
+    selected_group = st.selectbox("Select Group No. to analyze", options=group_options)
+
+    # 根據選擇過濫數據
+    if selected_group != "All":
+        filtered_results = results_df[results_df['Group No.'] == selected_group]
+        filtered_summary = summary_df[summary_df['Group No.'] == selected_group]
+    else:
+        filtered_results = results_df
+        filtered_summary = summary_df
+
+    if filtered_results.empty:
+        st.warning("No data to display for the selected group.")
+        return
+
+    # --- 圖表生成 ---
+    # 1. 柱狀圖 (SKU 需求 vs 庫存, 不含 D001)
+    st.subheader("SKU Demand vs. Stock (excluding D001)")
+    
+    # 過濫掉 D001
+    chart_data = filtered_results[filtered_results['Site'] != 'D001'].copy()
+    
+    if not chart_data.empty:
+        # 計算每個 SKU 的總需求和總庫存
+        chart_data['Stock Available'] = chart_data['SaSa Net Stock'] + chart_data['Pending Received']
+        sku_plot_data = chart_data.groupby('Article').agg({
+            'Total Demand': 'sum',
+            'Stock Available': 'sum'
+        }).reset_index()
+
+        fig1, ax1 = plt.subplots()
+        sku_plot_data.plot(x='Article', y=['Total Demand', 'Stock Available'], kind='bar', ax=ax1)
+        ax1.set_title(f"Group: {selected_group}")
+        ax1.set_ylabel("Quantity")
+        ax1.tick_params(axis='x', rotation=90)
+        st.pyplot(fig1)
+        st.caption("This chart compares total demand vs. available stock for each SKU (D001 excluded).")
+    else:
+        st.info("No data available for this chart after excluding D001.")
+
+    # 2. 淨需求熱圖
+    st.subheader("Net Demand Heatmap (by Site and Article, excluding D001)")
+    heatmap_filtered_results = filtered_results[filtered_results['Site'] != 'D001']
+    heatmap_data = heatmap_filtered_results.pivot_table(index='Site', columns='Article', values='Net Demand', aggfunc='sum')
+    if not heatmap_data.empty:
+        # 如果數據點太多，進行抽樣
+        if heatmap_data.size > 1000:
+            st.warning("Data points exceed 1000. Showing a sample of the data.")
+            sampled_cols = np.random.choice(heatmap_data.columns, size=min(50, len(heatmap_data.columns)), replace=False)
+            heatmap_data = heatmap_data[sampled_cols]
+
+        fig3, ax3 = plt.subplots(figsize=(12, max(6, len(heatmap_data.index) * 0.5)))
+        sns.heatmap(heatmap_data, annot=True, fmt=".0f", cmap="viridis", ax=ax3)
+        ax3.set_title(f"Group: {selected_group}")
+        st.pyplot(fig3)
+        st.caption("This heatmap shows the net demand for each article at each site (D001 excluded). Higher values indicate greater demand.")
+    else:
+        st.info("No net demand data available to generate a heatmap for this group (D001 excluded).")
+
+def export_to_excel(raw_df, results_df, summary_df):
+    """將數據導出到一個多工作表的 Excel 檔案中。"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        raw_df.to_excel(writer, sheet_name='Raw Data', index=False)
+        results_df.to_excel(writer, sheet_name='Calculation Results', index=False)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+    
+    processed_data = output.getvalue()
+    return processed_data
+
+# --- 視覺化圖表 ---
+with st.expander("視覺化圖表", expanded=True):
+    if st.session_state.results is not None:
+        create_visualizations(st.session_state.results, st.session_state.summary)
+    else:
+        st.info("點擊「開始分析」以生成圖表。")
+
+# --- 匯出功能 ---
+with st.expander("匯出分析結果", expanded=False):
+    if st.session_state.results is not None:
+        current_date = datetime.now().strftime("%Y%m%d")
+        file_name = f"Promotion_Demand_Report_{current_date}.xlsx"
+        
+        excel_data = export_to_excel(
+            st.session_state.df_merged,
+            st.session_state.results,
+            st.session_state.summary
+        )
+        
+        st.download_button(
+            label="📥 下載 Excel 報告",
+            data=excel_data,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.info("點擊「開始分析」以生成可匯出的報告。")
+
+# --- 依賴檢查 ---
+try:
+    import openpyxl
+    import matplotlib
+    import seaborn
+except ImportError:
+    st.error("缺少必要套件，請根據 requirements.txt 檔案安裝。")

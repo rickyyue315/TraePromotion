@@ -1,117 +1,88 @@
 # 零售推廣目標檢視及派貨系統
 
-## 系統簡介
-這是一個基於Streamlit的零售推廣目標檢視庫存及派貨建議系統，專為零售業務設計，用於分析推廣活動的庫存需求和派貨建議。
+## 概覽
 
-## 開發者資訊
-- 開發者：Ricky
-- 版本：v1.0
+本系統是一個基於 Streamlit 的互動式儀表板，旨在幫助零售業務團隊分析推廣活動的目標，並根據庫存和銷售數據生成派貨建議。
 
-## 技術要求
-- Python 3.8+
-- Streamlit 1.28.0+
-- Pandas 2.0.0+
-- NumPy 1.24.0+
-- OpenPyXL 3.1.0+
-- Matplotlib 3.7.0+
-- Seaborn 0.12.0+
+## 功能
+
+- **雙檔案上傳**：支援上傳庫存銷售檔案和推廣目標檔案。
+- **數據自動驗證與清理**：對上傳的數據進行格式檢查、清理和轉換。
+- **智能需求計算**：根據複雜的業務邏輯計算每日銷售率、推廣需求和淨需求。
+- **派貨建議**：生成明確的派貨數量和類型建議。
+- **互動式視覺化**：提供多維度圖表來洞察數據。
+- **一鍵匯出**：將分析結果匯出為格式化的 Excel 檔案。
 
 ## 安裝指南
 
-### 1. 環境設置
-```bash
-# 創建虛擬環境（推薦）
-python -m venv venv
+1.  **克隆或下載專案**
 
-# 激活虛擬環境
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-```
+2.  **安裝依賴**
+    在專案根目錄下，透過命令提示字元或終端機執行以下指令：
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-### 2. 安裝依賴
-```bash
-pip install -r requirements.txt
-```
+3.  **運行應用**
+    執行以下指令以啟動 Streamlit 應用：
+    ```bash
+    streamlit run app.py
+    ```
 
-### 3. 運行應用
-```bash
-streamlit run app.py
-```
+## 使用方式
 
-## 使用說明
+1.  **上傳檔案**：在主介面的檔案上傳區，分別上傳「庫存銷售檔 A」和「推廣目標檔 B」。
+2.  **調整參數**：在側邊欄可以自訂 `Lead Time` 等計算參數。
+3.  **開始分析**：點擊「開始分析」按鈕，系統將處理數據並生成結果。
+4.  **檢視結果**：在「分析結果」和「視覺化圖表」區域查看計算出的表格和圖表。
+5.  **匯出報告**：點擊「匯出」按鈕下載包含詳細數據的 Excel 報告。
 
-### 系統功能
-1. **檔案上傳**：支援上傳兩個Excel檔案
-   - 檔案A：庫存與銷售數據
-   - 檔案B：推廣目標數據
+## 輸入檔案格式
 
-2. **數據預覽**：顯示上傳數據的前10行
+系統要求特定的 Excel (.xlsx) 格式。
 
-3. **分析計算**：基於業務邏輯計算派貨需求
+### 檔案 A (庫存與銷售數據)
 
-4. **視覺化**：提供多種圖表展示分析結果
+- `Article` (字串)
+- `Article Description` (字串)
+- `RP Type` (字串, "ND" 或 "RF")
+- `Site` (字串)
+- `MOQ` (整數)
+- `SaSa Net Stock` (整數)
+- `Pending Received` (整數)
+- `Safety Stock` (整數)
+- `Last Month Sold Qty` (整數)
+- `MTD Sold Qty` (整數)
+- `Supply source` (整數, 1=行, 2=倉, 4=行)
+- `Description p. group` (字串)
 
-5. **匯出功能**：將分析結果匯出為Excel檔案
+### 檔案 B (推廣目標數據)
 
-### 輸入檔案格式要求
+- **Sheet1**:
+    - `Group No.` (字串)
+    - `Article` (字串)
+    - `SKU Target` (整數)
+    - `Target Type` (字串, "HK"/"MO"/"ALL")
+    - `Promotion Days` (整數)
+    - `Target Cover Days` (整數)
+- **Sheet2**:
+    - `Site` (字串)
+    - `Shop Target(HK)` (浮點數, 百分比)
+    - `Shop Target(MO)` (浮點數, 百分比)
+    - `Shop Target(ALL)` (浮點數, 百分比)
 
-#### 檔案A（庫存與銷售數據）
-| 欄位名稱 | 類型 | 說明 |
-|----------|------|------|
-| Article | string | 產品編號 |
-| Article Description | string | 產品描述 |
-| RP Type | string | 補貨類型：ND（不補貨）或 RF（補貨） |
-| Site | string | 店鋪編號 |
-| MOQ | integer | 最低派貨數量 |
-| SaSa Net Stock | integer | 現有庫存數量 |
-| Pending Received | integer | 在途訂單數量 |
-| Safety Stock | integer | 安全庫存數量 |
-| Last Month Sold Qty | integer | 上月銷量 |
-| MTD Sold Qty | integer | 本月至今銷量 |
+## 運行單元測試
 
-#### 檔案B（推廣目標數據）
-**Sheet 1：產品推廣目標**
-| 欄位名稱 | 類型 | 說明 |
-|----------|------|------|
-| Group No. | string | 產品組別 |
-| Article | string | 產品編號 |
-| SKU Target | integer | 推廣目標數量 |
-| Target Type | string | 目標類別 (HK/MO/ALL) |
-| Promotion Days | integer | 推廣日數 |
-| Target Cover Days | integer | 推廣目標安全覆蓋日數 |
+為了確保系統的穩定性和計算的準確性，項目包含了一套單元測試。請在修改代碼後運行測試，以驗證核心功能是否正常工作。
 
-**Sheet 2：店鋪推廣目標**
-| 欄位名稱 | 類型 | 說明 |
-|----------|------|------|
-| Site | string | 店鋪編號 |
-| Shop Target(HK) | integer | 香港店鋪推廣目標 |
-| Shop Target(MO) | integer | 澳門店鋪推廣目標 |
-| Shop Target(ALL) | integer | 所有店鋪推廣目標 |
-
-### 系統限制
-1. 僅支援Excel檔案格式（.xlsx）
-2. 檔案大小建議不超過50MB
-3. 數據處理在記憶體中完成，不會儲存到伺服器
-4. 支援多語言（英文/中文）
-
-## 測試
-運行單元測試：
 ```bash
 python -m unittest tests.py
 ```
 
-## 部署
+## 限制條件
 
-### 本地部署
-按照上述安裝指南運行即可。
-
-### 雲端部署
-支援部署到Streamlit Sharing、Heroku等雲端平台。
-
-## 更新日誌
-詳見VERSION.md檔案。
-
-## 支援與聯繫
-如有問題，請聯繫開發者Ricky。
+- **檔案類型**：僅支援 `.xlsx` 格式的 Excel 檔案。
+- **欄位匹配**：輸入檔案必須嚴格遵守指定的欄位名稱和格式。任何不匹配都可能導致錯誤。
+- **合併儲存格**：輸入的 Excel 檔案不應包含合併的儲存格，因為這會干擾 `pandas` 的解析。
+- **數據完整性**：缺失必要的 Sheet 或欄位將導致分析中止。
+- **數據量**：雖然沒有嚴格的限制，但處理非常大的檔案（例如，超過 100,000 行）可能會導致性能下降和內存消耗增加。
